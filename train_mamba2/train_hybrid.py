@@ -1,4 +1,13 @@
 import os
+import os
+import sys
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+
+# adding the parent directory to 
+# the sys.path.
+# print(parent)
+sys.path.append(parent)
 import math
 import logging
 from time import time

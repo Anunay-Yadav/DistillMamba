@@ -1,10 +1,10 @@
-model_name: meta-llama/Meta-Llama-3-8B-Instruct
+model_name: state-spaces/mamba-2.8b 
 ssm_layers: [0, 4, 8, 12, 16, 20, 24, 28]
 kl_weight: 0.1
 ce_weight: 1
 do_eval: false
-train_datasets_path: [/iopsstor/scratch/cscs/anunay/my_repo/MambaInLlama/dataset/llama3-ultrachat, /iopsstor/scratch/cscs/anunay/my_repo/MambaInLlama/dataset/llama3-ultrafeedback]
-output_dir: llama3_0.25_mamba/
+train_datasets_path: [/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/dataset/llama3-ultrachat, /iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/dataset/llama3-ultrafeedback]
+output_dir: mamba_mamba/
 seed: 42
 save_steps: 5000
 warmup_steps: 1500

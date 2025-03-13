@@ -1,0 +1,7 @@
+image = "/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/DistillMamba-pytorch-23.10-py3-venv.sqsh"
+mounts = [
+"/iopsstor",
+"/capstor/",
+"/users",
+]
+workdir = "/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba"

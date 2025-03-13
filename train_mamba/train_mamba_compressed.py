@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 import transformers
 from transformers import get_scheduler
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+from transformers import MambaConfig, MambaForCausalLM
 
 from accelerate import Accelerator
 from accelerate.utils import set_seed
@@ -67,15 +68,16 @@ def main():
     model_name = training_args.model_name
     dtype = torch.bfloat16
 
-    teacher_model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=dtype, attn_implementation='flash_attention_2')
+    # teacher_model = AutoModelForCausalLM.from_pretrained(
+    #     model_name, torch_dtype=dtype, attn_implementation='flash_attention_2')
+    teacher_model = MambaForCausalLM.from_pretrained(model_name, torch_dtype = dtype)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token_id = tokenizer.eos_token_id
 
     teacher_model = teacher_model.to(dtype)
 
     config = AutoConfig.from_pretrained(model_name, dtype=dtype)
-    
+    print(config)
     if None is None:
         d_xb = config.num_key_value_heads * \
             (config.hidden_size // config.num_attention_heads)
