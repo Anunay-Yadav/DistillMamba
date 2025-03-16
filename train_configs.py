@@ -53,6 +53,19 @@ class DistillConfig(transformers.TrainingArguments):
         metadata={"help": "The total progressive step."},
     )
 
+    head_dim: int = field(
+        default=None,
+    )
+    eval_datasets_path: List[str] = field(
+        default=None,
+        metadata={"help": "eval datasets."},
+    )
+    layers_to_copy: List[int] = field(
+        default=None,
+        metadata={"help": "which layers of teacher to copy from."}
+    )
+
+
 @dataclass
 class SFTDistillConfig(SFTConfig):
     """

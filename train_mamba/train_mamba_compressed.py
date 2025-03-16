@@ -20,19 +20,19 @@ import transformers
 from transformers import get_scheduler
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from transformers import MambaConfig, MambaForCausalLM
-
 from accelerate import Accelerator
 from accelerate.utils import set_seed
 from accelerate.logging import get_logger
+from copy import deepcopy
+from mamba.hybrid_wrapper import MambaTransformerHybridModelWrapper, MambaToMambaHybridModelWrapper
 
-from mamba.hybrid_wrapper import MambaTransformerHybridModelWrapper
 from mamba.hybrid_mamba_config import MambaConfig
 
 from train_configs import DistillConfig
 from train_configs import DistillArgumentParser
 from dataset import TextDataset
 
-from util import load_safetensors_to_dict, construct_layer_dict
+from util import load_safetensors_to_dict, construct_layer_dict, load_dataset
 
 logger = get_logger(__name__)
 
@@ -68,62 +68,47 @@ def main():
     model_name = training_args.model_name
     dtype = torch.bfloat16
 
-    # teacher_model = AutoModelForCausalLM.from_pretrained(
-    #     model_name, torch_dtype=dtype, attn_implementation='flash_attention_2')
-    teacher_model = MambaForCausalLM.from_pretrained(model_name, torch_dtype = dtype)
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    teacher_model = teacher_model.to(dtype)
+    teacher_model = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=dtype)
 
     config = AutoConfig.from_pretrained(model_name, dtype=dtype)
-    print(config)
-    if None is None:
-        d_xb = config.num_key_value_heads * \
-            (config.hidden_size // config.num_attention_heads)
-        d_inner = config.hidden_size
-    else:
-        # to handle gemma2
-        d_xb = config.num_key_value_heads * config.head_dim
-        d_inner = config.num_attention_heads * config.head_dim
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token_id = tokenizer.eos_token_id
+    student_config = deepcopy(config)
+    teacher_model = teacher_model.to(dtype)
 
-    ssm_layers = training_args.ssm_layers
-    attn_layers = [i for i in range(config.num_hidden_layers) if i not in ssm_layers]
-    
-    mamba_config = MambaConfig(
-        config.hidden_size,
-        {"expand": 1},
-        config.rms_norm_eps,
-        d_inner=d_inner,
-        d_xb=d_xb,
-        intermediate_size=config.intermediate_size,
-        hidden_act=config.hidden_act,
-        n_layer=config.num_hidden_layers,
-        attn_layers=attn_layers,
-    )
+    n_layer = config.num_hidden_layers//8
 
-    student_model = MambaTransformerHybridModelWrapper.init_distillation(
-            None, model_name, mamba_config, attn_layers=attn_layers, init_with_kqvo=training_args.init_with_kqvo, attn_implementation='flash_attention_2')
+    student_config.num_hidden_layers = n_layer
+    copy_from_teacher = False
+    if training_args.layers_to_copy is not None:
+        student_config.layers_to_copy = training_args.layers_to_copy
+        copy_from_teacher = True
+    student_model = MambaToMambaHybridModelWrapper.init_distillation(
+            None, model_name, copy_from_teacher, student_config, dtype=dtype)
 
     if training_args.prev_checkpoint_path is not None:
         # this is for progressive distillation,
-        # override ssm layers using the previous weights
         prev_checkpoint = load_safetensors_to_dict(
             training_args.prev_checkpoint_path)
-        prev_checkpoint_layers, is_mamba_layer = construct_layer_dict(prev_checkpoint, config.num_hidden_layers)
-        for (layer_id, layer_checkpoint) in prev_checkpoint_layers.items():
-            if is_mamba_layer[layer_id]:
-                # override weights of that layer
-                student_model.model.model.layers[layer_id].load_state_dict(layer_checkpoint)
+        prev_checkpoint['lm_head.weight'] = prev_checkpoint['backbone.embeddings.weight']
+        # prev_checkpoint_layers, is_mamba_layer = construct_layer_dict(prev_checkpoint, config.num_hidden_layers)
+        # for (layer_id, layer_checkpoint) in prev_checkpoint_layers.items():
+        #     if is_mamba_layer[layer_id]:
+        #         # override weights of that layer
+        #         student_model.model.model.layers[layer_id].load_state_dict(layer_checkpoint)
+        # print(student_model)
+        # print(accelerator.load_state(training_args.prev_checkpoint_path))
+        student_model.model.load_state_dict(prev_checkpoint)
                 
     # Freeze all parameters in teacher model by setting requires_grad to False
     for param in teacher_model.parameters():
         param.requires_grad = False
 
     # Freeze all non mamba parameters in student  model
-    for name, param in student_model.named_parameters():
-        if f"mamba" not in name:
-            param.requires_grad = False
+    # for name, param in student_model.named_parameters():
+    #     if f"mamba" not in name:
+    #         param.requires_grad = False
 
     if accelerator.is_main_process:
         print("teacher_model:", teacher_model)
@@ -143,15 +128,13 @@ def main():
         student_model.save_config(training_args.output_dir)
 
     # load dataset
-    train_data = torch.cat([torch.load(f'{train_dataset_path}/input_ids.pt', map_location="cpu") for train_dataset_path in training_args.train_datasets_path], dim=0)
-    train_label = torch.cat([torch.load(f'{train_dataset_path}/labels.pt', map_location="cpu") for train_dataset_path in training_args.train_datasets_path], dim=0)
+    train_data, train_label = load_dataset(training_args.train_datasets_path)
     train_dataset = TextDataset(train_data, train_label, pad_token_id=tokenizer.pad_token_id)
     train_dataloader = DataLoader(train_dataset, batch_size=training_args.per_device_train_batch_size, shuffle=True)
     print("length of dataset:", len(train_dataset))
 
     if training_args.do_eval:
-        eval_data = torch.cat([torch.load(f'{eval_dataset_path}/input_ids.pt', map_location="cpu") for eval_dataset_path in training_args.eval_datasets_path], dim=0)
-        eval_label = torch.cat([torch.load(f'{eval_dataset_path}/labels.pt', map_location="cpu") for eval_dataset_path in training_args.eval_datasets_path], dim=0)
+        eval_data, eval_label = load_dataset(training_args.eval_datasets_path)
         eval_dataset = TextDataset(eval_data, eval_label, pad_token_id=tokenizer.pad_token_id)
         eval_dataloader = DataLoader(eval_dataset, batch_size=training_args.per_device_eval_batch_size)
 
@@ -259,6 +242,7 @@ def main():
             if training_args.resume_from_checkpoint and epoch == starting_epoch:
                 if resume_step is not None and step < resume_step:
                     completed_steps += 1
+                    progress_bar.update(1) 
                     continue
 
             input_ids = batch["input_ids"]
@@ -345,7 +329,7 @@ def main():
             total_eval_kl_loss = 0
             total_eval_student_ce_loss = 0
             total_eval_teacher_ce_loss = 0
-            for step, batch in enumerate(eval_dataloader):
+            for step, batch in tqdm(enumerate(eval_dataloader)):
                 input_ids = batch["input_ids"]
                 labels = batch["labels"]
                 attention_mask = batch["attention_mask"]

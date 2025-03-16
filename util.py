@@ -1,7 +1,7 @@
 import os
 
 from safetensors import safe_open
-
+import torch
 def load_safetensors_to_dict(directory):
     safetensors_dict = {}
     for filename in os.listdir(directory):
@@ -27,3 +27,12 @@ def construct_layer_dict(safetensors_dict, num_hidden_layers):
                 is_mamba_layer[layer_id] = True
             layer_dict[layer_id][param_name] = tensor
     return layer_dict, is_mamba_layer
+def load_dataset(datasets_path):
+    data = []
+    label = []
+    for dataset_path in datasets_path:
+        temp_dataset = torch.load(dataset_path)
+        input_ids, labels = temp_dataset.dataset.tensors
+        data.append(input_ids)
+        label.append(labels)
+    return torch.cat(data, dim = 0), torch.cat(label, dim = 0)

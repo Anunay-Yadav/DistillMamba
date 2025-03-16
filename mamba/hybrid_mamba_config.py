@@ -13,3 +13,4 @@ class MambaConfig:
     hidden_act: str = "silu"
     n_layer: int = 32
     attn_layers: List[int] = field(default_factory=list)
+    layers_to_copy: List[int] = field(default_factory=list)

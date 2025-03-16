@@ -12,7 +12,8 @@ from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
 
 from mamba.hybrid_model import MambaDecoderLayer
 from mamba.hybrid_mamba_config import MambaConfig
-
+from transformers.models.mamba.modeling_mamba import MambaBlock
+from transformers import MambaForCausalLM
 from util import load_safetensors_to_dict
 
 MAMBA_CONFIG_NAME = "mamba_config.json"
@@ -134,5 +135,110 @@ class MambaTransformerHybridModelWrapper(nn.Module):
     def save_config(self, save_directory):
         os.makedirs(save_directory, exist_ok=True)
         config_path = os.path.join(save_directory, 'mamba_config.json')
+        with open(config_path, 'w') as f:
+            json.dump(self.mamba_config.__dict__, f, indent=4)
+
+class MambaToMambaHybridModelWrapper(nn.Module):
+
+    def __init__(self, checkpoint_path, mamba_model, copy_from_teacher, mamba_config, dtype , load_from_hub=False, **kwargs):
+        super(MambaToMambaHybridModelWrapper, self).__init__()
+        self.mamba_config = mamba_config
+        self.model = MambaForCausalLM(mamba_config)
+        self.config = mamba_config
+        
+        if copy_from_teacher:
+            self.model.backbone.embeddings.load_state_dict(mamba_model.backbone.embeddings.state_dict())
+            self.model.backbone.lm_head.load_state_dict(mamba_model.backbone.lm_head.state_dict())
+            for layer_idx in range(mamba_config.num_hidden_layers):
+                self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
+                self.model.backbone.layers._modules[f'{layer_idx}'].mixer.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].mixer.state_dict())
+                # self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
+                # self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
+                # self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
+                # self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
+
+        if checkpoint_path is not None:
+            if load_from_hub:
+                # load from a huggingface hub
+                self.model.load_state_dict(load_state_dict_hf(checkpoint_path, device=torch.device("cpu"), dtype=dtype))
+            else:
+                # load from a local directory
+                if os.path.exists(f"{checkpoint_path}/pytorch_model.bin"):
+                    # support save from bin file
+                    self.model.load_state_dict(torch.load(f"{checkpoint_path}/pytorch_model.bin", map_location=torch.device("cpu")))
+                else:
+                    # support save from safetensors
+                    self.model.load_state_dict(load_safetensors_to_dict(checkpoint_path))
+        
+        self.model = self.model.to(dtype).cuda()
+
+    def allocate_mamba_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
+        return {
+            i: layer.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
+            for i, layer in enumerate(self.model.model.layers)
+            if isinstance(layer, MambaDecoderLayer)
+        }
+
+    def forward(
+        self,
+        input_ids,
+        **kwargs,
+    ):
+        return self.model(input_ids, **kwargs)
+
+    def generate(
+        self,
+        input_ids,
+        **kwargs,
+    ):
+        output = self.model.generate(
+            input_ids,
+            use_cache=False,
+            **kwargs,
+        )
+        return output
+    
+    @staticmethod
+    def init_distillation(
+        checkpoint_path,
+        tranformer_name,
+        copy_from_teacher,
+        mamba_config,
+        dtype=torch.bfloat16,
+        **kwargs,
+    ):
+        transformer_model = AutoModelForCausalLM.from_pretrained(tranformer_name, torch_dtype=dtype)
+        return MambaToMambaHybridModelWrapper(checkpoint_path, transformer_model,copy_from_teacher, mamba_config, dtype)
+
+    @staticmethod
+    def from_pretrained_local(pretrained_model_name, torch_dtype=torch.bfloat16):
+        config_data = load_config_hf(pretrained_model_name)
+        transformer_model = AutoModelForCausalLM.from_pretrained(config_data["_name_or_path"], torch_dtype=torch_dtype)
+        with open(f'{pretrained_model_name}/{MAMBA_CONFIG_NAME}', 'r') as json_file:
+            config_dict = json.load(json_file)
+        mamba_config = MambaConfig(**config_dict)
+        return MambaToMambaHybridModelWrapper(pretrained_model_name, transformer_model, mamba_config, torch_dtype) 
+
+    @staticmethod
+    def from_pretrained_hub(pretrained_model_name, torch_dtype=torch.bfloat16):
+        config_data = load_config_hf(pretrained_model_name)
+        transformer_model = AutoModelForCausalLM.from_pretrained(config_data["_name_or_path"], torch_dtype=torch_dtype)
+        resolved_archive_file = cached_file(pretrained_model_name, MAMBA_CONFIG_NAME, _raise_exceptions_for_missing_entries=False)
+        config_dict = json.load(open(resolved_archive_file))
+        mamba_config = MambaConfig(**config_dict)
+        return MambaToMambaHybridModelWrapper(pretrained_model_name, transformer_model, mamba_config, torch_dtype, load_from_hub=True) 
+
+    @staticmethod
+    def from_pretrained(pretrained_model_name, torch_dtype=torch.bfloat16):
+        if os.path.exists(pretrained_model_name):
+            return MambaToMambaHybridModelWrapper.from_pretrained_local(pretrained_model_name, torch_dtype)
+        else:
+            return MambaToMambaHybridModelWrapper.from_pretrained_hub(pretrained_model_name, torch_dtype)
+
+    def save_config(self, save_directory):
+        os.makedirs(save_directory, exist_ok=True)
+        config_path = os.path.join(save_directory, 'mamba_config.json')
+        mamba_config_dict = self.mamba_config.__dict__
+        mamba_config_dict['torch_dtype'] = str(mamba_config_dict['torch_dtype'])
         with open(config_path, 'w') as f:
             json.dump(self.mamba_config.__dict__, f, indent=4)
