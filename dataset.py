@@ -166,16 +166,17 @@ if __name__ == "__main__":
         # if cnt >= 100: 
         #     break
 
-    dataset = TensorDataset(torch.cat(input_ids), torch.cat(labels))
-    train_size = int(0.7 * len(dataset))
-    eval_size = len(dataset) - train_size
+    inp = torch.cat(input_ids)
+    lab = torch.cat(labels)
+    from sklearn.model_selection import train_test_split
+    X_train, X_test, y_train, y_test = train_test_split(inp, lab, test_size=0.3, random_state=42)
+    print(X_train.shape, y_train.shape)
+    torch.save(TensorDataset(X_train.clone(), y_train.clone()), "dataset/mamba-ultrachat/train_dataset.pt")
+    print(X_test.shape, y_test.shape)
+    torch.save(TensorDataset(X_test.clone(), y_test.clone()), "dataset/mamba-ultrachat/eval_dataset.pt")
 
-    train_dataset, eval_dataset = random_split(dataset, [train_size, eval_size])
-
-    # print(eval_dataset.dataset)
-    torch.save(train_dataset, "dataset/mamba-ultrachat/train_dataset.pt")
-    torch.save(eval_dataset, "dataset/mamba-ultrachat/eval_dataset.pt")
-    inp, lab = torch.load("dataset/mamba-ultrachat/train_dataset.pt").dataset.tensors
-    # print(dataset)
+    # train_dataset, eval_dataset = random_split(dataset, [train_size, eval_size])
+    inp, lab = torch.load("dataset/mamba-ultrachat/eval_dataset.pt").tensors
+    print(len(inp))
 
     

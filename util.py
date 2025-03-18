@@ -32,7 +32,7 @@ def load_dataset(datasets_path):
     label = []
     for dataset_path in datasets_path:
         temp_dataset = torch.load(dataset_path)
-        input_ids, labels = temp_dataset.dataset.tensors
+        input_ids, labels = temp_dataset.tensors
         data.append(input_ids)
         label.append(labels)
     return torch.cat(data, dim = 0), torch.cat(label, dim = 0)

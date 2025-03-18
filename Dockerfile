@@ -48,3 +48,4 @@ RUN wget https://github.com/state-spaces/mamba/archive/refs/tags/v2.2.2.tar.gz &
     python setup.py install
 
 RUN MAX_JOBS=4 pip install flash-attn==2.6.3 peft==0.12.0 huggingface-hub==0.24.5 deepspeed==0.12.2 trl==0.8.6 transformers==4.43.1 --no-build-isolation
+RUN pip install transformers -U

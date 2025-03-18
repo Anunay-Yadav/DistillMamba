@@ -148,7 +148,7 @@ class MambaToMambaHybridModelWrapper(nn.Module):
         
         if copy_from_teacher:
             self.model.backbone.embeddings.load_state_dict(mamba_model.backbone.embeddings.state_dict())
-            self.model.backbone.lm_head.load_state_dict(mamba_model.backbone.lm_head.state_dict())
+            self.model.lm_head.load_state_dict(mamba_model.lm_head.state_dict())
             for layer_idx in range(mamba_config.num_hidden_layers):
                 self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
                 self.model.backbone.layers._modules[f'{layer_idx}'].mixer.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].mixer.state_dict())

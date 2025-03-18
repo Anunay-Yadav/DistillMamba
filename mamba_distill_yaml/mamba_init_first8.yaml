@@ -6,7 +6,6 @@ do_eval: true
 eval_datasets_path: [/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/dataset/mamba-ultrachat/eval_dataset.pt]
 train_datasets_path: [/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/dataset/mamba-ultrachat/train_dataset.pt]
 output_dir: output/mamba_init_first8/
-resume_from_checkpoint: output/mamba_init_first8/step_15000
 seed: 42
 save_steps: 5000
 warmup_steps: 1500
