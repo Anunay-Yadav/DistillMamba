@@ -177,3 +177,5 @@ core_*
 *.out
 output/*
 mamba2/*
+mamba2-2.7B/pytorch_model.bin
+mamba2-2.7B/tokenizer.json
