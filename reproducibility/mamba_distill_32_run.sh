@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -J mamba_distill_last8
+#SBATCH -J mamba_distill_32
 #SBATCH -t 24:00:00
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --environment=/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/starter_container_mamba.toml
 #SBATCH --account=a-a10
-#SBATCH -e mamba_distill_last8_logs/run.error
-#SBATCH -o mamba_distill_last8_logs/run.out
+#SBATCH -e mamba_distill_32_logs/run.error
+#SBATCH -o mamba_distill_32_logs/run.out
 ######################
 #### Set network #####
 ######################
@@ -21,5 +21,9 @@ export LAUNCHER="accelerate launch \
     --main_process_port 29500 \
     --config_file multi_gpu.yaml
     "
-export CMD="$LAUNCHER train_mamba/train_compressed.py mamba_distill_yaml/mamba_init_last8.yaml"
+export CMD="$LAUNCHER train_mamba/train_compressed.py mamba_distill_yaml/mamba_noinit_32.yaml"
+cd lm-evaluation-harness/
+pip install -e .
+cd ..
+pip install datasets==2.20.0
 srun $CMD

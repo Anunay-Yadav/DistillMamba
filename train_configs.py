@@ -64,6 +64,18 @@ class DistillConfig(transformers.TrainingArguments):
         default=None,
         metadata={"help": "which layers of teacher to copy from."}
     )
+    run_name: str = field(
+        default=None,
+        metadata={"help": "run name for proper logging in W&B"}
+    )
+    lm_eval_tasks: str = field(
+        default="piqa",
+        metadata={"help": "lm hairness eval tasks to run in the end"}
+    )
+    number_of_layers : int = field(
+        default=64,
+        metadata={"help": "number of layers in student model"}
+    )
 
 
 @dataclass

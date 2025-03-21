@@ -17,6 +17,7 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from lm_eval.__main__ import cli_evaluate
 
 import transformers
 from transformers import get_scheduler
@@ -33,7 +34,7 @@ from train_configs import DistillConfig
 from train_configs import DistillArgumentParser
 from dataset import TextDataset
 
-from util import load_safetensors_to_dict, construct_layer_dict, load_dataset
+from util import load_safetensors_to_dict, construct_layer_dict, load_dataset, log_lm_eval_results
 
 logger = get_logger(__name__)
 
@@ -81,7 +82,7 @@ def main():
     teacher_model = teacher_model.to(dtype)
 
 
-    n_layer = config.num_hidden_layers//8
+    n_layer = training_args.number_of_layers
 
     student_config.num_hidden_layers = n_layer
     copy_from_teacher = False
@@ -93,24 +94,16 @@ def main():
     if training_args.prev_checkpoint_path is not None:
         # this is for progressive distillation,
         # override ssm layers using the previous weights
-        prev_checkpoint = load_safetensors_to_dict(
-            training_args.prev_checkpoint_path)
-        prev_checkpoint['lm_head.weight'] = prev_checkpoint['backbone.embeddings.weight']
-        # prev_checkpoint_layers, is_mamba_layer = construct_layer_dict(prev_checkpoint, config.num_hidden_layers)
-        # for (layer_id, layer_checkpoint) in prev_checkpoint_layers.items():
-        #     if is_mamba_layer[layer_id]:
-        #         # override weights of that layer
-        #         student_model.model.model.layers[layer_id].load_state_dict(layer_checkpoint)
-        student_model.model.load_state_dict(prev_checkpoint)
+        student_model.model.load_state_dict(torch.load(f"{training_args.prev_checkpoint_path}/pytorch_model.bin", map_location=torch.device("cpu")))
                 
     # Freeze all parameters in teacher model by setting requires_grad to False
     for param in teacher_model.parameters():
         param.requires_grad = False
 
     # Freeze all non mamba parameters in student  model
-    # for name, param in student_model.named_parameters():
-    #     if f"mamba" not in name:
-    #         param.requires_grad = False
+    for name, param in student_model.named_parameters():
+        if f"layers" not in name:
+            param.requires_grad = False
 
     if accelerator.is_main_process:
         print("teacher_model:", teacher_model)
@@ -189,7 +182,8 @@ def main():
     if accelerator.is_main_process:
         experiment_config = vars(training_args)
         experiment_config["lr_scheduler_type"] = "cosine"
-        accelerator.init_trackers("mamba_distill", experiment_config)
+        accelerator.init_trackers("mamba_distill", experiment_config, init_kwargs={"wandb":{"name":training_args.run_name}})
+
 
     # Train!
     total_batch_size = training_args.per_device_train_batch_size * accelerator.num_processes * training_args.gradient_accumulation_steps
@@ -310,7 +304,7 @@ def main():
                     )
                     if accelerator.is_main_process:
                         tokenizer.save_pretrained(output_dir)
-                    accelerator.save_state(output_dir)
+                        accelerator.save_state(output_dir)
 
         end_time = time()
         logger.info(f"Epoch {epoch} training took {end_time-start_time} seconds")
@@ -325,49 +319,65 @@ def main():
                 tokenizer.save_pretrained(training_args.output_dir)
         
         if training_args.do_eval:
+            torch.cuda.empty_cache()
+            
             # run evaluation
             student_model.eval()
-            total_eval_loss = 0
-            total_eval_kl_loss = 0
-            total_eval_student_ce_loss = 0
-            total_eval_teacher_ce_loss = 0
-            for step, batch in enumerate(eval_dataloader):
-                input_ids = batch["input_ids"]
-                labels = batch["labels"]
-                attention_mask = batch["attention_mask"]
-                with torch.no_grad():
+
+            with torch.no_grad():
+                total_eval_loss = 0
+                total_eval_kl_loss = 0
+                total_eval_student_ce_loss = 0
+                total_eval_teacher_ce_loss = 0
+                for step, batch in enumerate(eval_dataloader):
+                    input_ids = batch["input_ids"]
+                    labels = batch["labels"]
+                    attention_mask = batch["attention_mask"]
                     teacher_outputs = teacher_model(
                         input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_cache=False)
                     teacher_logits = teacher_outputs.logits
                     teach_cross_entropy_loss = teacher_outputs.loss
-                targets = F.softmax(teacher_logits, dim=-1)
-                student_outputs = student_model(
-                    input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_cache=False)
-                student_logits = student_outputs.logits
-                student_cross_entropy_loss = student_outputs.loss
-                kl_loss = F.kl_div(F.log_softmax(
-                    student_logits, dim=-1), targets, reduction='batchmean')
-                loss = training_args.kl_weight * kl_loss + training_args.ce_weight * student_cross_entropy_loss
-                total_eval_loss += loss.detach().float()
-                total_eval_kl_loss += kl_loss.detach().float()
-                total_eval_student_ce_loss += student_cross_entropy_loss.detach().float()
-                total_eval_teacher_ce_loss += teach_cross_entropy_loss.detach().float()
+                    targets = F.softmax(teacher_logits, dim=-1)
+                    student_outputs = student_model(
+                        input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_cache=False)
+                    student_logits = student_outputs.logits
+                    student_cross_entropy_loss = student_outputs.loss
+                    kl_loss = F.kl_div(F.log_softmax(
+                        student_logits, dim=-1), targets, reduction='batchmean')
+                    loss = training_args.kl_weight * kl_loss + training_args.ce_weight * student_cross_entropy_loss
+                    total_eval_loss += loss.detach().float()
+                    total_eval_kl_loss += kl_loss.detach().float()
+                    total_eval_student_ce_loss += student_cross_entropy_loss.detach().float()
+                    total_eval_teacher_ce_loss += teach_cross_entropy_loss.detach().float()
 
-            avg_eval_loss = total_eval_loss / len(train_dataloader)
-            avg_eval_kl_loss = total_eval_kl_loss / len(train_dataloader)
-            avg_eval_teacher_ce_loss = total_eval_teacher_ce_loss / len(train_dataloader)
-            avg_eval_student_ce_loss = total_eval_student_ce_loss / len(train_dataloader)
+                avg_eval_loss = total_eval_loss / len(train_dataloader)
+                avg_eval_kl_loss = total_eval_kl_loss / len(train_dataloader)
+                avg_eval_teacher_ce_loss = total_eval_teacher_ce_loss / len(train_dataloader)
+                avg_eval_student_ce_loss = total_eval_student_ce_loss / len(train_dataloader)
 
-            avg_eval_loss = accelerator.gather(torch.tensor(avg_eval_loss).to(accelerator.device)).mean().item()
-            avg_eval_kl_loss = accelerator.gather(torch.tensor(avg_eval_kl_loss).to(accelerator.device)).mean().item()
-            avg_eval_teacher_ce_loss = accelerator.gather(torch.tensor(avg_eval_teacher_ce_loss).to(accelerator.device)).mean().item()
-            avg_eval_student_ce_loss = accelerator.gather(torch.tensor(avg_eval_student_ce_loss).to(accelerator.device)).mean().item()
+                avg_eval_loss = accelerator.gather(torch.tensor(avg_eval_loss).to(accelerator.device)).mean().item()
+                avg_eval_kl_loss = accelerator.gather(torch.tensor(avg_eval_kl_loss).to(accelerator.device)).mean().item()
+                avg_eval_teacher_ce_loss = accelerator.gather(torch.tensor(avg_eval_teacher_ce_loss).to(accelerator.device)).mean().item()
+                avg_eval_student_ce_loss = accelerator.gather(torch.tensor(avg_eval_student_ce_loss).to(accelerator.device)).mean().item()
 
-            accelerator.log({'eval loss': avg_eval_loss,
-                    'eval kl loss': avg_eval_kl_loss,
-                    'eval teacher ce loss': avg_eval_teacher_ce_loss,
-                    'eval student ce loss': avg_eval_student_ce_loss,
-                    'step': completed_steps})
+                accelerator.log({'eval loss': avg_eval_loss,
+                        'eval kl loss': avg_eval_kl_loss,
+                        'eval teacher ce loss': avg_eval_teacher_ce_loss,
+                        'eval student ce loss': avg_eval_student_ce_loss,
+                        'step': completed_steps})
+
+    if training_args.output_dir is not None and accelerator.is_main_process:
+        arguments = {
+            "model" : "mamba2_compressed",
+            "pretrained" : training_args.output_dir,
+            "tasks": "mmlu,hellaswag,piqa,arc_easy,arc_challenge,winogrande,openbookqa,pubmedqa,race",
+            "num_fewshot": 0,
+            "device" : "cuda",
+            "batch_size" : 16,
+            "output_path" : training_args.output_dir + "/lm-eval-results.json"
+        }
+        cli_evaluate(arguments)
+        log_lm_eval_results(training_args.output_dir, accelerator)
 
 if __name__ == "__main__":
     main()

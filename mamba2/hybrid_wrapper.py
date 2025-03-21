@@ -13,7 +13,7 @@ from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
 from transformers.utils.hub import cached_file
 
 from mamba2.hybrid_model import MambaDecoderLayer
-from mamba2.hybrid_mamba_config import MambaConfig
+from transformers import Mamba2Config as MambaConfig
 from transformers import Mamba2ForCausalLM
 from util import load_safetensors_to_dict
 
@@ -148,13 +148,16 @@ class MambaToMambaHybridModelWrapper(nn.Module):
         self.mamba_config = mamba_config
         self.model = Mamba2ForCausalLM(mamba_config)
         self.config = mamba_config
-        
+
+        self.model.backbone.embeddings.load_state_dict(mamba_model.backbone.embeddings.state_dict(), strict=True)
+        self.model.lm_head.load_state_dict(mamba_model.lm_head.state_dict(), strict=True)
+        self.model.backbone.norm_f.load_state_dict(mamba_model.backbone.norm_f.state_dict(), strict=True)
+
         if copy_from_teacher:
-            self.model.backbone.embeddings.load_state_dict(mamba_model.backbone.embeddings.state_dict())
-            self.model.lm_head.load_state_dict(mamba_model.lm_head.state_dict())
             for layer_idx in range(mamba_config.num_hidden_layers):
-                self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
-                self.model.backbone.layers._modules[f'{layer_idx}'].mixer.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].mixer.state_dict())
+                # print("teacher model:", mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].mixer.state_dict())
+                self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict(), strict=True)
+                self.model.backbone.layers._modules[f'{layer_idx}'].mixer.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].mixer.state_dict(), strict=True)
                 # self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
                 # self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
                 # self.model.backbone.layers._modules[f'{layer_idx}'].norm.load_state_dict(mamba_model.backbone.layers._modules[f'{mamba_config.layers_to_copy[layer_idx]}'].norm.state_dict())
@@ -172,7 +175,10 @@ class MambaToMambaHybridModelWrapper(nn.Module):
                     self.model.load_state_dict(torch.load(f"{checkpoint_path}/pytorch_model.bin", map_location=torch.device("cpu")))
                 else:
                     # support save from safetensors
-                    self.model.load_state_dict(load_safetensors_to_dict(checkpoint_path))
+                    prev_checkpoint = load_safetensors_to_dict(
+                        checkpoint_path)
+                    prev_checkpoint['lm_head.weight'] = prev_checkpoint['backbone.embeddings.weight']
+                    self.model.load_state_dict(prev_checkpoint)
         
         self.model = self.model.to(dtype).cuda()
 
@@ -220,8 +226,12 @@ class MambaToMambaHybridModelWrapper(nn.Module):
         transformer_model = AutoModelForCausalLM.from_pretrained(config_data["_name_or_path"], torch_dtype=torch_dtype)
         with open(f'{pretrained_model_name}/{MAMBA_CONFIG_NAME}', 'r') as json_file:
             config_dict = json.load(json_file)
+        try:
+            del config_dict['torch_dtype']
+        except:
+            print("No torch_dtype found")
         mamba_config = MambaConfig(**config_dict)
-        return MambaToMambaHybridModelWrapper(pretrained_model_name, transformer_model, mamba_config, torch_dtype) 
+        return MambaToMambaHybridModelWrapper(pretrained_model_name, transformer_model, False, mamba_config, torch_dtype) 
 
     @staticmethod
     def from_pretrained_hub(pretrained_model_name, torch_dtype=torch.bfloat16):
@@ -229,8 +239,12 @@ class MambaToMambaHybridModelWrapper(nn.Module):
         transformer_model = AutoModelForCausalLM.from_pretrained(config_data["_name_or_path"], torch_dtype=torch_dtype)
         resolved_archive_file = cached_file(pretrained_model_name, MAMBA_CONFIG_NAME, _raise_exceptions_for_missing_entries=False)
         config_dict = json.load(open(resolved_archive_file))
+        try:
+            del config_dict['torch_dtype']
+        except:
+            print("No torch_dtype found")
         mamba_config = MambaConfig(**config_dict)
-        return MambaToMambaHybridModelWrapper(pretrained_model_name, transformer_model, mamba_config, torch_dtype, load_from_hub=True) 
+        return MambaToMambaHybridModelWrapper(pretrained_model_name, transformer_model, False, mamba_config, torch_dtype, load_from_hub=True) 
 
     @staticmethod
     def from_pretrained(pretrained_model_name, torch_dtype=torch.bfloat16):
@@ -244,5 +258,9 @@ class MambaToMambaHybridModelWrapper(nn.Module):
         config_path = os.path.join(save_directory, 'mamba_config.json')
         mamba_config_dict = self.mamba_config.__dict__
         mamba_config_dict['torch_dtype'] = str(mamba_config_dict['torch_dtype'])
+        try:
+            del mamba_config_dict['torch_dtype']
+        except:
+            print("No torch_dtype found")
         with open(config_path, 'w') as f:
             json.dump(self.mamba_config.__dict__, f, indent=4)

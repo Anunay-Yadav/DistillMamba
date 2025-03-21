@@ -11,8 +11,17 @@ from lm_eval.api.registry import register_model
 
 from lm_eval.models.huggingface import HFLM
 from lm_eval.utils import stop_sequences_criteria
+import os
+import sys
+current = os.path.dirname(os.path.realpath(__file__))
+parent = os.path.dirname(current)
+parent = os.path.dirname(parent)
+# adding the parent directory to 
+#  the sys.path.
+# print(parent)
+sys.path.append(parent)
 
-@register_model("mamba_hybrid")
+@register_model("mamba_compressed")
 class MambaEvalWrapper(HFLM):
 
     AUTO_MODEL_CLASS = transformers.AutoModelForCausalLM
@@ -20,8 +29,8 @@ class MambaEvalWrapper(HFLM):
     def __init__(self, pretrained, max_length=2048, batch_size=None, device="cuda",
                  dtype=torch.bfloat16):
         LM.__init__(self)
-        from mamba.hybrid_wrapper import MambaTransformerHybridModelWrapper
-        self._model = MambaTransformerHybridModelWrapper.from_pretrained(pretrained, torch_dtype=dtype).model
+        from mamba.hybrid_wrapper import MambaToMambaHybridModelWrapper
+        self._model = MambaToMambaHybridModelWrapper.from_pretrained(pretrained, torch_dtype=dtype).model
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained)
         print(self._model)
         self._model = self._model.cuda()
@@ -63,7 +72,7 @@ class MambaEvalWrapper(HFLM):
             **generation_kwargs,
         )
 
-@register_model("mamba2_hybrid")
+@register_model("mamba2_compressed")
 class Mamba2EvalWrapper(HFLM):
 
     AUTO_MODEL_CLASS = transformers.AutoModelForCausalLM
@@ -71,8 +80,8 @@ class Mamba2EvalWrapper(HFLM):
     def __init__(self, pretrained, max_length=2048, batch_size=None, device="cuda",
                  dtype=torch.bfloat16):
         LM.__init__(self)
-        from mamba2.hybrid_wrapper import MambaTransformerHybridModelWrapper
-        self._model = MambaTransformerHybridModelWrapper.from_pretrained(pretrained, torch_dtype=dtype).model
+        from mamba2.hybrid_wrapper import MambaToMambaHybridModelWrapper as Mamba2ToMamba2HybridModelWrapper
+        self._model = Mamba2ToMamba2HybridModelWrapper.from_pretrained(pretrained, torch_dtype=dtype).model
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained)
         print(self._model)
         self._model = self._model.cuda()

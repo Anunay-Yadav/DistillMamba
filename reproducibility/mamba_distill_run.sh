@@ -3,7 +3,7 @@
 #SBATCH -t 24:00:00
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1
-#SBATCH --environment=/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/starter_container.toml
+#SBATCH --environment=/iopsstor/scratch/cscs/anunay/my_repo/DistillMamba/starter_container_mamba.toml
 #SBATCH --account=a-a10
 #SBATCH -e mamba_distill_node8_logs/run.error
 #SBATCH -o mamba_distill_node8_logs/run.out
@@ -13,7 +13,7 @@
 export GPUS_PER_NODE=4
 head_node_ip=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 ######################
-
+export ACCELERATE_LOG_LEVEL=info
 export LAUNCHER="accelerate launch \
     --num_processes $((SLURM_NNODES * GPUS_PER_NODE)) \
     --num_machines $SLURM_NNODES \

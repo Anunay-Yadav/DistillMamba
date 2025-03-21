@@ -32,7 +32,7 @@ from train_configs import DistillConfig
 from train_configs import DistillArgumentParser
 from dataset import TextDataset
 
-from util import load_safetensors_to_dict, construct_layer_dict, load_dataset
+from util import load_safetensors_to_dict, construct_layer_dict, load_dataset, log_lm_eval_results
 
 logger = get_logger(__name__)
 
@@ -43,7 +43,7 @@ def main():
     accelerator = (
         Accelerator(log_with="wandb")
     )
-
+    
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -77,7 +77,7 @@ def main():
     student_config = deepcopy(config)
     teacher_model = teacher_model.to(dtype)
 
-    n_layer = config.num_hidden_layers//8
+    n_layer = training_args.number_of_layers
 
     student_config.num_hidden_layers = n_layer
     copy_from_teacher = False
@@ -91,6 +91,7 @@ def main():
         # this is for progressive distillation,
         prev_checkpoint = load_safetensors_to_dict(
             training_args.prev_checkpoint_path)
+        print(prev_checkpoint.keys())
         prev_checkpoint['lm_head.weight'] = prev_checkpoint['backbone.embeddings.weight']
         # prev_checkpoint_layers, is_mamba_layer = construct_layer_dict(prev_checkpoint, config.num_hidden_layers)
         # for (layer_id, layer_checkpoint) in prev_checkpoint_layers.items():
@@ -104,9 +105,9 @@ def main():
         param.requires_grad = False
 
     # Freeze all non mamba parameters in student  model
-    # for name, param in student_model.named_parameters():
-    #     if f"mamba" not in name:
-    #         param.requires_grad = False
+    for name, param in student_model.named_parameters():
+        if f"layers" not in name:
+            param.requires_grad = False
 
     if accelerator.is_main_process:
         print("teacher_model:", teacher_model)
@@ -184,7 +185,7 @@ def main():
     if accelerator.is_main_process:
         experiment_config = vars(training_args)
         experiment_config["lr_scheduler_type"] = "cosine"
-        accelerator.init_trackers("mamba_distill", experiment_config)
+        accelerator.init_trackers("mamba_distill", experiment_config, init_kwargs={"wandb":{"name":training_args.run_name}})
 
     # Train!
     total_batch_size = training_args.per_device_train_batch_size * accelerator.num_processes * training_args.gradient_accumulation_steps
@@ -372,6 +373,12 @@ def main():
             )
             if accelerator.is_main_process:
                 tokenizer.save_pretrained(training_args.output_dir)
+            
+            
+    if training_args.output_dir is not None and accelerator.is_main_process:
+        os.system(f'accelerate launch --config_file multi_gpu.yaml benchmark/llm_eval/lm_harness_eval.py --model mamba_compressed --model_args pretrained={training_args.output_dir} --tasks {training_args.lm_eval_tasks} --num_fewshot 0 --device cuda --batch_size 16 --output_path {training_args.output_dir}/lm-eval-results.json')
+
+        # log_lm_eval_results(training_args.output_dir, accelerator)
 
 if __name__ == "__main__":
     main()
